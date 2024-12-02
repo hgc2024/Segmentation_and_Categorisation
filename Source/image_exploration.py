@@ -12,6 +12,9 @@ images_dir = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_En
 with open(annotation_file, 'r') as f:
     coco_data = json.load(f)
 
+    # cut it down so that the file name includes "000000391837"
+    coco_data['images'] = [img for img in coco_data['images'] if '000000391837' in img['file_name']]
+
 # Helper functions
 def get_image_info(image_id):
     # Get image info by ID
@@ -43,6 +46,11 @@ def display_image_with_annotations(image_path, annotations):
     
     plt.axis('off')
     plt.show()
+
+    # Save the image with annotations
+    img_with_annotation_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Source\Segmentation_and_Categorisation\Source\Sample"
+    annotated_image_name = "000000391837_annotated.jpg"
+    fig.savefig(os.path.join(img_with_annotation_path, annotated_image_name))
 
 # Inspect images and annotations
 for i, img_info in enumerate(coco_data['images'][:3]):
