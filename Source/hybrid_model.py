@@ -37,6 +37,7 @@ from torchvision.models.detection import MaskRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.transforms.functional import to_tensor
 from PIL import Image
+from skimage.measure import regionprops
 import matplotlib.pyplot as plt
 
 # Define a simple custom Backbone with Spectral Coordinate Block
@@ -110,10 +111,34 @@ def preprocess_image(image_path, segmentation_path=None):
     
     target = None
     if segmentation_path:
+        # Load segmentation mask and convert to binary tensor
+        seg_mask = Image.open(segmentation_path).convert("L")
+        mask_tensor = to_tensor(seg_mask)
+
+        # Generate bounding boxes from segmentation mask
+        mask_np = (mask_tensor > 0).numpy()[0]
+        regions = regionprops(mask_np.astype(int))
+        
+        boxes = []
+        labels = []
+        masks = []
+        
+        for region in regions:
+            # Get bounding box (y1, x1, y2, x2)
+            minr, minc, maxr, maxc = region.bbox
+            # Convert to (x1, y1, x2, y2) format
+            boxes.append([minc, minr, maxc, maxr])
+            labels.append(1)  # Assuming single class for now
+            
+            # Extract individual object mask
+            obj_mask = torch.zeros_like(mask_tensor)
+            obj_mask[:, minr:maxr, minc:maxc] = mask_tensor[:, minr:maxr, minc:maxc]
+            masks.append(obj_mask > 0)
+
         target = {
-            'boxes': torch.tensor([[15, 20, 120, 200]]),  # Placeholder: Replace with actual bounding box data
-            'labels': torch.tensor([1]),  # Placeholder: Replace with actual labels
-            'masks': to_tensor(Image.open(segmentation_path).convert("L")) > 0  # Placeholder: Binary masks
+            'boxes': torch.tensor(boxes, dtype=torch.float32),
+            'labels': torch.tensor(labels, dtype=torch.int64),
+            'masks': torch.stack(masks) if masks else torch.zeros((0, mask_tensor.shape[1], mask_tensor.shape[2]), dtype=torch.bool)
         }
     
     return img_tensor, target
