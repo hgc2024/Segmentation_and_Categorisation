@@ -28,7 +28,7 @@ Key Areas to Fill In
         Customize the forward method or integrate specific loss functions if needed.
 """
 
-
+import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -37,7 +37,8 @@ from torchvision.models.detection import MaskRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.transforms.functional import to_tensor
 from PIL import Image
-from skimage.measure import regionprops
+import numpy as np
+import cv2
 import matplotlib.pyplot as plt
 
 # Define a simple custom Backbone with Spectral Coordinate Block
@@ -82,7 +83,7 @@ class CustomMaskRCNN(nn.Module):
     def __init__(self, num_classes):
         super(CustomMaskRCNN, self).__init__()
         self.backbone = CustomBackbone()
-        self.out_channels = 256  # Placeholder: This needs to match the final output channels of your backbone
+        self.out_channels = 256  # This matches the final output channels of the backbone
 
         # RPN setup
         self.rpn_anchor_gen = AnchorGenerator(
@@ -91,7 +92,7 @@ class CustomMaskRCNN(nn.Module):
         )
 
         # Mask R-CNN components
-        # Placeholder: Replace with your RoI Align layers if you want more control
+        # Replace with custom RoI Align layers if needed
         self.model = MaskRCNN(
             backbone=self.backbone,
             num_classes=num_classes,
@@ -100,45 +101,53 @@ class CustomMaskRCNN(nn.Module):
         )
 
     def forward(self, images, targets=None):
-        # Placeholder: Customize this function for additional pre/post-processing of the inputs/outputs
+        # Customize this function for additional pre/post-processing of the inputs/outputs
         return self.model(images, targets)
 
 # Preprocessing function for input data
-def preprocess_image(image_path, segmentation_path=None):
+def preprocess_image(image_path, annotation_path=None):
+    # Load and transform image
     image = Image.open(image_path).convert("RGB")
     transform = torchvision.transforms.ToTensor()
     img_tensor = transform(image)
     
     target = None
-    if segmentation_path:
-        # Load segmentation mask and convert to binary tensor
-        seg_mask = Image.open(segmentation_path).convert("L")
-        mask_tensor = to_tensor(seg_mask)
-
-        # Generate bounding boxes from segmentation mask
-        mask_np = (mask_tensor > 0).numpy()[0]
-        regions = regionprops(mask_np.astype(int))
+    if annotation_path:
+        # Load annotation JSON
+        with open(annotation_path, 'r') as f:
+            annotation = json.load(f)
         
         boxes = []
         labels = []
         masks = []
         
-        for region in regions:
-            # Get bounding box (y1, x1, y2, x2)
-            minr, minc, maxr, maxc = region.bbox
-            # Convert to (x1, y1, x2, y2) format
-            boxes.append([minc, minr, maxc, maxr])
-            labels.append(1)  # Assuming single class for now
+        # Extract segmentation masks from annotations
+        for ann in annotation['annotations']:
+            # Get segmentation polygon points
+            seg = ann['segmentation'][0]  # Assuming first segmentation is the main one
             
-            # Extract individual object mask
-            obj_mask = torch.zeros_like(mask_tensor)
-            obj_mask[:, minr:maxr, minc:maxc] = mask_tensor[:, minr:maxr, minc:maxc]
-            masks.append(obj_mask > 0)
+            # Convert polygon points to mask
+            poly = np.array(seg).reshape((-1, 2))
+            mask = np.zeros((img_tensor.shape[1], img_tensor.shape[2]), dtype=np.uint8)
+            cv2.fillPoly(mask, [poly.astype(np.int32)], 1)
+            
+            # Get bounding box
+            bbox = ann['bbox']  # [x, y, width, height]
+            boxes.append([bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]])
+            
+            # Get category label
+            labels.append(ann['category_id'])
+            
+            # Convert mask to tensor
+            mask_tensor = torch.from_numpy(mask).bool()
+            masks.append(mask_tensor)
 
         target = {
             'boxes': torch.tensor(boxes, dtype=torch.float32),
             'labels': torch.tensor(labels, dtype=torch.int64),
-            'masks': torch.stack(masks) if masks else torch.zeros((0, mask_tensor.shape[1], mask_tensor.shape[2]), dtype=torch.bool)
+            'masks': torch.stack(masks) if masks else torch.zeros((0, img_tensor.shape[1], img_tensor.shape[2]), dtype=torch.bool),
+            'area': torch.tensor([ann['area'] for ann in annotation['annotations']], dtype=torch.float32),
+            'iscrowd': torch.tensor([ann['iscrowd'] for ann in annotation['annotations']], dtype=torch.int64)
         }
     
     return img_tensor, target
@@ -162,13 +171,13 @@ def visualize_results(image_path, outputs, threshold=0.5):
 if __name__ == "__main__":
     # Load data
     image_path = "/mnt/data/000000391837.jpg"  # Placeholder: Replace with your image path
-    segmented_path = "/mnt/data/000000391837_segmented.png"  # Placeholder: Replace with your segmentation path
+    annotation_path = "/mnt/data/000000391837.json"  # Placeholder: Replace with your annotation path
 
     # Prepare image and target
-    img_tensor, target = preprocess_image(image_path, segmented_path)
+    img_tensor, target = preprocess_image(image_path, annotation_path)
 
     # Initialize model
-    num_classes = 3  # Placeholder: Update based on the number of classes in your dataset
+    num_classes = 91  # Update based on the number of classes in COCO dataset (including background)
     model = CustomMaskRCNN(num_classes=num_classes)
     model.eval()
 
