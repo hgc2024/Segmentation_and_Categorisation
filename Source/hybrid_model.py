@@ -36,22 +36,26 @@ import torchvision
 from torchvision.models.detection import MaskRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.transforms.functional import to_tensor
+from torch.utils.data import DataLoader, Dataset
 from PIL import Image
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import os
+from tqdm import tqdm
 
 # Define a simple custom Backbone with Spectral Coordinate Block
 class CustomBackbone(nn.Module):
     def __init__(self):
         super(CustomBackbone, self).__init__()
+        self.out_channels = 256  # Add this line to specify output channels
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         self.sc_block1 = SpectralCoordinateBlock(64, 128)
-        self.sc_block2 = SpectralCoordinateBlock(128, 256)
+        self.sc_block2 = SpectralCoordinateBlock(128, self.out_channels)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -104,60 +108,88 @@ class CustomMaskRCNN(nn.Module):
         # Customize this function for additional pre/post-processing of the inputs/outputs
         return self.model(images, targets)
 
-# Preprocessing function for input data
-def preprocess_image(image_path, annotation_path=None):
-    # Load and transform image
-    image = Image.open(image_path).convert("RGB")
-    transform = torchvision.transforms.ToTensor()
-    img_tensor = transform(image)
-    
-    target = None
-    if annotation_path:
-        # Load annotation JSON
-        with open(annotation_path, 'r') as f:
-            annotation = json.load(f)
-        
+# Custom Dataset for COCO
+class COCOSubsetDataset(Dataset):
+    def __init__(self, image_dir, annotation_file, transform=None, subset_size=100):
+        with open(annotation_file, 'r') as f:
+            self.coco_data = json.load(f)
+
+        self.image_dir = image_dir
+        self.transform = transform
+        self.subset_size = subset_size
+        self.images = self.coco_data['images'][:self.subset_size]
+        self.annotations = self.coco_data['annotations']
+        self.categories = self.coco_data['categories']
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img_info = self.images[idx]
+        image_path = os.path.join(self.image_dir, img_info['file_name'])
+        image = Image.open(image_path).convert("RGB")
+        img_tensor = to_tensor(image)
+
+        # Get annotations for this image
+        annotations = [ann for ann in self.annotations if ann['image_id'] == img_info['id']]
+
         boxes = []
         labels = []
         masks = []
-        
-        # Extract segmentation masks from annotations
-        for ann in annotation['annotations']:
-            # Get segmentation polygon points
-            seg = ann['segmentation'][0]  # Assuming first segmentation is the main one
+        for ann in annotations:
+            # Validate segmentation data
+            if not isinstance(ann['segmentation'], list) or not ann['segmentation']:
+                continue
             
-            # Convert polygon points to mask
-            poly = np.array(seg).reshape((-1, 2))
+            # Convert segmentation to polygons
+            poly = []
+            for segment in ann['segmentation']:
+                if isinstance(segment, (list, tuple)) and len(segment) % 2 == 0:
+                    poly.append(np.array(segment).reshape((-1, 2)))
+            
+            if not poly:
+                continue  # Skip if no valid polygons
+
+            # Create mask
             mask = np.zeros((img_tensor.shape[1], img_tensor.shape[2]), dtype=np.uint8)
-            cv2.fillPoly(mask, [poly.astype(np.int32)], 1)
-            
-            # Get bounding box
+            for p in poly:
+                cv2.fillPoly(mask, [p.astype(np.int32)], 1)
+
+            # Get bounding box coordinates
             bbox = ann['bbox']  # [x, y, width, height]
             boxes.append([bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]])
-            
-            # Get category label
             labels.append(ann['category_id'])
-            
-            # Convert mask to tensor
-            mask_tensor = torch.from_numpy(mask).bool()
-            masks.append(mask_tensor)
+            masks.append(torch.from_numpy(mask).bool())
 
         target = {
             'boxes': torch.tensor(boxes, dtype=torch.float32),
             'labels': torch.tensor(labels, dtype=torch.int64),
             'masks': torch.stack(masks) if masks else torch.zeros((0, img_tensor.shape[1], img_tensor.shape[2]), dtype=torch.bool),
-            'area': torch.tensor([ann['area'] for ann in annotation['annotations']], dtype=torch.float32),
-            'iscrowd': torch.tensor([ann['iscrowd'] for ann in annotation['annotations']], dtype=torch.int64)
+            'area': torch.tensor([ann['area'] for ann in annotations], dtype=torch.float32),
+            'iscrowd': torch.tensor([ann['iscrowd'] for ann in annotations], dtype=torch.int64)
         }
-    
-    return img_tensor, target
+
+        if self.transform:
+            img_tensor = self.transform(img_tensor)
+
+        return img_tensor, target
 
 # Visualizing the results
-def visualize_results(image_path, outputs, threshold=0.5):
-    image = Image.open(image_path).convert("RGB")
+def visualize_results(image_input, outputs, threshold=0.05):  # Lower threshold
+    if isinstance(image_input, str):
+        image = Image.open(image_input).convert("RGB")
+    else:
+        image = (image_input * 255).astype(np.uint8)
+    plt.figure(figsize=(12, 8))
     plt.imshow(image)
     ax = plt.gca()
 
+    if len(outputs['boxes']) == 0:
+        print("No detections found in the image")
+    else:
+        print(f"Found {len(outputs['boxes'])} potential objects")
+        print(f"Max confidence score: {outputs['scores'].max().item():.3f}")
+        
     for box, label, score in zip(outputs['boxes'], outputs['labels'], outputs['scores']):
         if score > threshold:
             x1, y1, x2, y2 = box
@@ -169,21 +201,78 @@ def visualize_results(image_path, outputs, threshold=0.5):
 
 # Example usage
 if __name__ == "__main__":
-    # Load data
-    image_path = "/mnt/data/000000391837.jpg"  # Placeholder: Replace with your image path
-    annotation_path = "/mnt/data/000000391837.json"  # Placeholder: Replace with your annotation path
+    # Paths
+    annotation_file = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_train2017.json'
+    image_dir = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\train2017\train2017'
 
-    # Prepare image and target
-    img_tensor, target = preprocess_image(image_path, annotation_path)
+    # Load subset of COCO dataset
+    subset_size = 100
+    dataset = COCOSubsetDataset(image_dir, annotation_file, subset_size=subset_size)
+    def collate_fn(batch):
+        return tuple(zip(*batch))
+        
+    data_loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, collate_fn=collate_fn)  # Set num_workers to 0 to avoid multiprocessing issues
 
     # Initialize model
     num_classes = 91  # Update based on the number of classes in COCO dataset (including background)
     model = CustomMaskRCNN(num_classes=num_classes)
+    model.train()
+
+    # Define optimizer and criterion
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
+
+    
+
+# Training loop (1 epoch for dry run)
+    for epoch in range(1):
+        progress_bar = tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Epoch {epoch + 1}")
+        running_loss = 0.0
+        for i, (images, targets) in progress_bar:
+            # Skip batches with empty boxes
+            if any(len(target['boxes']) == 0 for target in targets):
+                continue
+
+            images = list(image for image in images)
+            targets = [{k: v for k, v in t.items()} for t in targets]
+
+            try:
+                loss_dict = model(images, targets)
+                losses = sum(loss for loss in loss_dict.values())
+
+                optimizer.zero_grad()
+                losses.backward()
+                optimizer.step()
+
+                running_loss += losses.item()
+                progress_bar.set_postfix(loss=losses.item())
+            except Exception as e:
+                print(f"Error in batch {i}: {str(e)}")
+                continue
+
+    # Print training complete message
+    print("Training complete.")
+
+    # Switch to evaluation mode
     model.eval()
 
-    # Perform inference
-    with torch.no_grad():
-        outputs = model([img_tensor])
+    # Evaluate on a small set of images
+    eval_subset_size = 20
+    # eval_threshold = 0.5
+    eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
+    annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
+    eval_dataset = COCOSubsetDataset(eval_dir, annotation_file, subset_size=eval_subset_size)
+    eval_data_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))  # Set num_workers to 0 to avoid multiprocessing issues
 
-    # Visualize results
-    visualize_results(image_path, outputs[0])
+    with torch.no_grad():
+        for i, (images, targets) in enumerate(eval_data_loader): # Something is wrong when loading images, as 000000391895.jpg isn't in the test2017 folder
+            images = list(image for image in images)
+            outputs = model(images)
+            print(f"Evaluating image {i + 1}/{eval_subset_size}")
+            # print the bounding boxes
+            print(outputs[0]['boxes'])
+            visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), outputs[0])
+
+    # Print evaluation complete message
+    print("Evaluation complete.")
+
+
