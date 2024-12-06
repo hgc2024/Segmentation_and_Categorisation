@@ -224,7 +224,7 @@ if __name__ == "__main__":
     
 
 # Training loop (1 epoch for dry run)
-    for epoch in range(1):
+    for epoch in range(5):
         progress_bar = tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Epoch {epoch + 1}")
         running_loss = 0.0
         for i, (images, targets) in progress_bar:
@@ -257,7 +257,7 @@ if __name__ == "__main__":
 
     # Evaluate on a small set of images
     eval_subset_size = 20
-    # eval_threshold = 0.5
+    eval_threshold = 0.5
     eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
     annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
     eval_dataset = COCOSubsetDataset(eval_dir, annotation_file, subset_size=eval_subset_size)
@@ -270,7 +270,47 @@ if __name__ == "__main__":
             print(f"Evaluating image {i + 1}/{eval_subset_size}")
             # print the bounding boxes
             print(outputs[0]['boxes'])
-            visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), outputs[0])
+            visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), outputs[0], threshold=0.05)
+            # Calculate metrics for this image
+            gt_boxes = targets[0]['boxes']
+            pred_boxes = outputs[0]['boxes']
+            pred_scores = outputs[0]['scores']
+            
+            # Calculate IoU between predicted and ground truth boxes
+            ious = torch.zeros(len(pred_boxes), len(gt_boxes))
+            for p_idx, pred_box in enumerate(pred_boxes):
+                for g_idx, gt_box in enumerate(gt_boxes):
+                    # Calculate intersection coordinates
+                    x1 = max(pred_box[0], gt_box[0])
+                    y1 = max(pred_box[1], gt_box[1])
+                    x2 = min(pred_box[2], gt_box[2])
+                    y2 = min(pred_box[3], gt_box[3])
+                    
+                    # Calculate intersection area
+                    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+                    
+                    # Calculate union area
+                    pred_area = (pred_box[2] - pred_box[0]) * (pred_box[3] - pred_box[1])
+                    gt_area = (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1])
+                    union = pred_area + gt_area - intersection
+                    
+                    ious[p_idx, g_idx] = intersection / union
+
+            # Calculate average precision
+            matched_gt = set()
+            true_positives = 0
+            for pred_idx in torch.argsort(pred_scores, descending=True):
+                if torch.max(ious[pred_idx]) > 0.5:  # IoU threshold of 0.5
+                    best_gt_idx = torch.argmax(ious[pred_idx]).item()
+                    if best_gt_idx not in matched_gt:
+                        true_positives += 1
+                        matched_gt.add(best_gt_idx)
+
+            precision = true_positives / len(pred_boxes) if len(pred_boxes) > 0 else 0
+            recall = true_positives / len(gt_boxes) if len(gt_boxes) > 0 else 0
+            f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+            print(f"Precision: {precision:.3f}, Recall: {recall:.3f}, F1 Score: {f1_score:.3f}")
 
     # Print evaluation complete message
     print("Evaluation complete.")
