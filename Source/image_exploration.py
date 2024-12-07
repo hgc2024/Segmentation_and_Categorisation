@@ -90,21 +90,45 @@ crowd_images = []
 crowd_images_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Crowd_Images"
 crowd_image_segmentations_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Crowd_Images\Segmentations"
 
+# Please create a subfolder that only contains photos with category ID 1, which is a person
+person_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Category_ID_1_Person"
 for img_info in coco_data['images']:
-    if len(crowd_images) >= 5:
-        break
-        
+    # # Get annotations for this image
+    # annotations = get_annotations_for_image(img_info['id'])
+    # # Check if category_id == 1 for any annotation
+    # if any(ann['category_id'] == 1 for ann in annotations):
+    #     # Save the image with annotations
+    #     img_path = os.path.join(images_dir, img_info['file_name'])
+    #     display_image_with_annotations(img_path, annotations, person_dir)
     # Get annotations for this image
     annotations = get_annotations_for_image(img_info['id'])
-    # Check if iscrowd == 1 for any annotation
-    if any(ann['iscrowd'] == 1 for ann in annotations):
-        crowd_images.append(img_info)
-        # Save the image with annotations
-        img_path = os.path.join(images_dir, img_info['file_name'])
-        display_image_with_annotations(img_path, annotations, crowd_images_dir)
+    # Check if category_id == 1 for any annotation
+    if any(ann['category_id'] == 1 for ann in annotations):
+        # Save the image with annotations using person_dir
+        
+    
 
-        # Save the image with segmentations
-        display_image_with_segmentations(img_path, annotations, crowd_image_segmentations_dir)
+    for img_info in coco_data['images']:
+        if len(crowd_images) >= 5:
+            break
+        
+        # Get annotations for this image
+        annotations = get_annotations_for_image(img_info['id'])
+        # Check if iscrowd == 1 for any annotation
+        if any(ann['iscrowd'] == 1 for ann in annotations):
+            crowd_images.append(img_info)
+            # Print category labels for this image
+            for ann in annotations:
+                category_id = ann['category_id']
+                category_name = next((cat['name'] for cat in coco_data['categories'] if cat['id'] == category_id), "Unknown")
+                print(f"Category ID: {category_id} - Name: {category_name}")
+                
+            # Save the image with annotations
+            img_path = os.path.join(images_dir, img_info['file_name'])
+            display_image_with_annotations(img_path, annotations, crowd_images_dir)
+
+            # Save the image with segmentations
+            display_image_with_segmentations(img_path, annotations, crowd_image_segmentations_dir)
 
 # Inspect images and annotations
 for i, img_info in enumerate(coco_data['images'][:10]):

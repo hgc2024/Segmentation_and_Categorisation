@@ -28,7 +28,6 @@ Key Areas to Fill In
         Customize the forward method or integrate specific loss functions if needed.
 """
 
-
 import json
 import torch
 import torch.nn as nn
@@ -44,18 +43,22 @@ import cv2
 import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
-import csv
-from PIL import ImageDraw, ImageFont
+
+# Check for GPU availability
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
 
 # Define a simple custom Backbone with Spectral Coordinate Block
 class CustomBackbone(nn.Module):
     def __init__(self):
         super(CustomBackbone, self).__init__()
-        self.out_channels = 256
+        self.out_channels = 256  # Add this line to specify output channels
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
         self.sc_block1 = SpectralCoordinateBlock(64, 128)
         self.sc_block2 = SpectralCoordinateBlock(128, self.out_channels)
 
@@ -76,12 +79,12 @@ class SpectralCoordinateBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(out_channels)
-        self.rope_embedding = nn.Parameter(torch.randn(out_channels, 1, 1))
+        self.rope_embedding = nn.Parameter(torch.randn(out_channels, 1, 1))  # Rotary Position Embedding
 
     def forward(self, x):
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
-        x = x * self.rope_embedding
+        x = x * self.rope_embedding  # Apply Rotary Position Embedding
         return x
 
 # Integrate Custom Backbone with Mask R-CNN
@@ -89,11 +92,16 @@ class CustomMaskRCNN(nn.Module):
     def __init__(self, num_classes):
         super(CustomMaskRCNN, self).__init__()
         self.backbone = CustomBackbone()
-        self.out_channels = 256
+        self.out_channels = 256  # This matches the final output channels of the backbone
+
+        # RPN setup
         self.rpn_anchor_gen = AnchorGenerator(
             sizes=((32, 64, 128, 256, 512),),
             aspect_ratios=((0.5, 1.0, 2.0),)
         )
+
+        # Mask R-CNN components
+        # Replace with custom RoI Align layers if needed
         self.model = MaskRCNN(
             backbone=self.backbone,
             num_classes=num_classes,
@@ -102,13 +110,18 @@ class CustomMaskRCNN(nn.Module):
         )
 
     def forward(self, images, targets=None):
+        # Ensure images and targets are on the same device
+        images = [img.to(device) for img in images]
+        if targets is not None:
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         return self.model(images, targets)
 
 # Custom Dataset for COCO
 class COCOSubsetDataset(Dataset):
-    def __init__(self, image_dir, annotation_file, transform=None, subset_size=500):
+    def __init__(self, image_dir, annotation_file, transform=None, subset_size=100):
         with open(annotation_file, 'r') as f:
             self.coco_data = json.load(f)
+
         self.image_dir = image_dir
         self.transform = transform
         self.subset_size = subset_size
@@ -124,23 +137,34 @@ class COCOSubsetDataset(Dataset):
         image_path = os.path.join(self.image_dir, img_info['file_name'])
         image = Image.open(image_path).convert("RGB")
         img_tensor = to_tensor(image)
+
+        # Get annotations for this image
         annotations = [ann for ann in self.annotations if ann['image_id'] == img_info['id']]
+
         boxes = []
         labels = []
         masks = []
         for ann in annotations:
+            # Validate segmentation data
             if not isinstance(ann['segmentation'], list) or not ann['segmentation']:
                 continue
+            
+            # Convert segmentation to polygons
             poly = []
             for segment in ann['segmentation']:
                 if isinstance(segment, (list, tuple)) and len(segment) % 2 == 0:
                     poly.append(np.array(segment).reshape((-1, 2)))
+            
             if not poly:
-                continue
+                continue  # Skip if no valid polygons
+
+            # Create mask
             mask = np.zeros((img_tensor.shape[1], img_tensor.shape[2]), dtype=np.uint8)
             for p in poly:
                 cv2.fillPoly(mask, [p.astype(np.int32)], 1)
-            bbox = ann['bbox']
+
+            # Get bounding box coordinates
+            bbox = ann['bbox']  # [x, y, width, height]
             boxes.append([bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]])
             labels.append(ann['category_id'])
             masks.append(torch.from_numpy(mask).bool())
@@ -158,128 +182,125 @@ class COCOSubsetDataset(Dataset):
 
         return img_tensor, target
 
-# Training loop with evaluation at the end of each epoch
+# Visualizing the results
+def visualize_results(image_input, outputs, threshold=0.05, image_id = None):  # Lower threshold
+    if isinstance(image_input, str):
+        image = Image.open(image_input).convert("RGB")
+    else:
+        image = (image_input * 255).astype(np.uint8)
+    plt.figure(figsize=(12, 8))
+    plt.imshow(image)
+    ax = plt.gca()
+
+    if len(outputs['boxes']) == 0:
+        print("No detections found in the image")
+    else:
+        # Load COCO categories
+        with open(annotation_file, 'r') as f:
+            coco_data = json.load(f)
+        categories = coco_data['categories']
+
+        print(f"Found {len(outputs['boxes'])} potential objects")
+        print(f"Max confidence score: {outputs['scores'].max().item():.3f}")
+
+        for box, label, score in zip(outputs['boxes'], outputs['labels'], outputs['scores']):
+            if score > threshold:
+                x1, y1, x2, y2 = box
+                category_name = next((cat['name'] for cat in categories if cat['id'] == label.item()), "Unknown")
+                ax.add_patch(plt.Rectangle((x1.cpu(), y1.cpu()), (x2 - x1).cpu(), (y2 - y1).cpu(), fill=False, color='red', linewidth=2))
+                ax.text(x1.cpu(), y1.cpu(), f"{category_name}: {score.item():.2f}", color='white', fontsize=8, bbox=dict(facecolor='red', edgecolor='none', alpha=0.5))
+        print(f"Found {len(outputs['boxes'])} potential objects")
+        print(f"Max confidence score: {outputs['scores'].max().item():.3f}")
+        
+    for box, label, score in zip(outputs['boxes'], outputs['labels'], outputs['scores']):
+        if score > threshold:
+            x1, y1, x2, y2 = box
+            ax.add_patch(plt.Rectangle((x1.cpu(), y1.cpu()), (x2 - x1).cpu(), (y2 - y1).cpu(), fill=False, color='red', linewidth=2))
+            ax.text(x1.cpu(), y1.cpu(), f"Label {label.item()}: {score.item():.2f}", color='white', fontsize=8, bbox=dict(facecolor='red', edgecolor='none', alpha=0.5))
+
+    plt.axis("off")
+
+    # Save the figure with image_id in filename
+    output_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Test_Results\Images"
+    if image_id is not None:
+        plt.savefig(os.path.join(output_dir, f"{image_id}_output_.png"))
+    else:
+        plt.savefig(os.path.join(output_dir, "output.png"))
+
+    plt.show()
+
+# Example usage
 if __name__ == "__main__":
+    # Paths
     annotation_file = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_train2017.json'
     image_dir = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\train2017\train2017'
-    eval_image_dir = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017'
 
+    # Load subset of COCO dataset
     subset_size = 100
-    eval_subset_size = 10
-
     dataset = COCOSubsetDataset(image_dir, annotation_file, subset_size=subset_size)
+    def collate_fn(batch):
+        return tuple(zip(*batch))
+        
+    data_loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)  # Set num_workers to 0 to avoid multiprocessing issues
 
-    # Set the number of CPU threads for PyTorch operations
-    num_cpus = 12  # Adjust this number based on your CPU cores
-    torch.set_num_threads(num_cpus)
-    
-    eval_dataset = COCOSubsetDataset(eval_image_dir, annotation_file, subset_size=eval_subset_size)
-
-    data_loader = DataLoader(dataset, batch_size=20, shuffle=True, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))
-    eval_data_loader = DataLoader(eval_dataset, batch_size=5, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))
-
-    num_classes = 91
-    model = CustomMaskRCNN(num_classes=num_classes)
+    # Initialize model
+    num_classes = 91  # Update based on the number of classes in COCO dataset (including background)
+    model = CustomMaskRCNN(num_classes=num_classes).to(device)
     model.train()
 
+    # Define optimizer and criterion
     optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
 
-    # Prepare CSV file for evaluation results
-    csv_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\evaluation_results.csv"
-    csv_header = ['epoch', 'training_loss', 'evaluation_loss']
-    with open(csv_file, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(csv_header)
+    
 
+    # Training loop (1 epoch for dry run)
     for epoch in range(1):
         progress_bar = tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Epoch {epoch + 1}")
         running_loss = 0.0
         for i, (images, targets) in progress_bar:
+            # Skip batches with empty boxes
             if any(len(target['boxes']) == 0 for target in targets):
                 continue
+
             images = list(image for image in images)
-            targets = [{k: v for k, v in t.items()} for t in targets]
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
             try:
                 loss_dict = model(images, targets)
                 losses = sum(loss for loss in loss_dict.values())
+
                 optimizer.zero_grad()
                 losses.backward()
-                import matplotlib.patches as patches
-
-                # Get predictions from model
-                predictions = model(images)
-
-                # Create mapping of category IDs to names
-                category_id_to_name = {cat['id']: cat['name'] for cat in dataset.categories}
-
-                # Add visualization during evaluation
-                def visualize_predictions(image, predictions, save_path=None):
-                    # Convert tensor to PIL Image
-                    image = torchvision.transforms.ToPILImage()(image)
-                    draw = ImageDraw.Draw(image)
-                    
-                    boxes = predictions['boxes'].cpu()
-                    labels = predictions['labels'].cpu()
-                    scores = predictions['scores'].cpu()
-                    
-                    # Draw each prediction
-                    for box, label, score in zip(boxes, labels, scores):
-                        if score > 0.5:  # Confidence threshold
-                            box = box.numpy()
-                            label_name = category_id_to_name.get(label.item(), 'Unknown')
-                            
-                            # Draw rectangle
-                            draw.rectangle(box.tolist(), outline='red', width=3)
-                            
-                            # Draw label
-                            draw.text((box[0], box[1]-15), f'{label_name}: {score:.2f}', 
-                                     fill='red')
-                    
-                    if save_path:
-                        image.save(save_path)
-                    
-                    return image
-
-                # In evaluation loop, after model prediction:
-                eval_output_dir = 'eval_visualizations'
-                os.makedirs(eval_output_dir, exist_ok=True)
-
-                for idx, (image, pred) in enumerate(zip(images, predictions)):
-                    vis_path = os.path.join(eval_output_dir, f'eval_img_{idx}.jpg')
-                    visualize_predictions(image, pred, vis_path)
                 optimizer.step()
+
                 running_loss += losses.item()
                 progress_bar.set_postfix(loss=losses.item())
             except Exception as e:
                 print(f"Error in batch {i}: {str(e)}")
                 continue
-        avg_training_loss = running_loss / len(data_loader)
-        print(f"Epoch {epoch + 1} complete. Training loss: {avg_training_loss:.4f}")
 
-        # Evaluation at the end of each epoch
-        model.eval()
-        with torch.no_grad():
-            eval_loss = 0.0
-            for i, (images, targets) in enumerate(eval_data_loader):
-                images = list(image for image in images)
-                targets = [{k: v for k, v in t.items()} for t in targets]
-                try:
-                    loss_dict = model(images, targets)
-                    losses = sum(loss for loss in loss_dict.values())
-                    eval_loss += losses.item()
-                except Exception as e:
-                    print(f"Error during evaluation batch {i}: {str(e)}")
-                    continue
-            avg_eval_loss = eval_loss / len(eval_data_loader)
-            print(f"Epoch {epoch + 1} Evaluation loss: {avg_eval_loss:.4f}")
+    # Print training complete message
+    print("Training complete.")
 
-        # Save results to CSV
-        with open(csv_file, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([epoch + 1, f"{avg_training_loss:.4f}", f"{avg_eval_loss:.4f}"])
+    # Switch to evaluation mode
+    model.eval()
 
-        model.train()
+    # Evaluate on a small set of images
+    eval_subset_size = 10
+    # eval_threshold = 0.5
+    eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
+    annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
+    eval_dataset = COCOSubsetDataset(eval_dir, annotation_file, subset_size=eval_subset_size)
+    eval_data_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))  # Set num_workers to 0 to avoid multiprocessing issues
 
-    print("Training and evaluation complete.")
+    with torch.no_grad():
+        for i, (images, targets) in enumerate(eval_data_loader): # Something is wrong when loading images, as 000000391895.jpg isn't in the test2017 folder
+            images = list(image for image in images)
+            outputs = model(images)
+            print(f"Evaluating image {i + 1}/{eval_subset_size}")
+            # print the bounding boxes
+            print(outputs[0]['boxes'])
+            visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), outputs[0], image_id=i)
 
-
+    # Print evaluation complete message
+    print("Evaluation complete.")
