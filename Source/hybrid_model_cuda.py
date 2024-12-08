@@ -236,6 +236,25 @@ def visualize_results(image_input, outputs, threshold=0.5, image_id = None):  # 
     
     plt.close(fig)  # Close the figure to free memory
 
+# Utility function for Intersection over Union (IoU)
+def compute_iou(box1, box2):
+    x1, y1, x2, y2 = box1
+    x1_gt, y1_gt, x2_gt, y2_gt = box2
+
+    xi1 = max(x1, x1_gt)
+    yi1 = max(y1, y1_gt)
+    xi2 = min(x2, x2_gt)
+    yi2 = min(y2, y2_gt)
+
+    inter_area = max(0, xi2 - xi1 + 1) * max(0, yi2 - yi1 + 1)
+
+    box1_area = (x2 - x1 + 1) * (y2 - y1 + 1)
+    box2_area = (x2_gt - x1_gt + 1) * (y2_gt - y1_gt + 1)
+
+    union_area = box1_area + box2_area - inter_area
+
+    return inter_area / union_area if union_area > 0 else 0.0
+
 # Example usage
 if __name__ == "__main__":
     # Paths
@@ -249,13 +268,13 @@ if __name__ == "__main__":
     def collate_fn(batch):
         return tuple(zip(*batch))
         
-    data_loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)  # Set num_workers to 0 to avoid multiprocessing issues
+    data_loader = DataLoader(dataset, batch_size=20, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)  # Set num_workers to 0 to avoid multiprocessing issues
 
      # Evaluate on a small set of images
     eval_subset_size = 10
     # eval_threshold = 0.5
     # eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
-    # eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
+    eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
     # Set total number of images to use
     train_ratio = 0.8  # 80% for training
     
@@ -272,10 +291,8 @@ if __name__ == "__main__":
     
         
     # Update eval_dataset to use test_dataset
-    eval_dataset = test_dataset
-    eval_dir = image_base_dir  # Keep reference to original directory
-    annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
-    eval_dataset = COCOSubsetDataset(eval_dir, annotation_file, subset_size=eval_subset_size)
+    annotation_eval_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
+    eval_dataset = COCOSubsetDataset(eval_dir, annotation_eval_file, subset_size=eval_subset_size)
     eval_data_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))  # Set num_workers to 0 to avoid multiprocessing issues
 
     best_loss = float('inf')
@@ -347,58 +364,133 @@ if __name__ == "__main__":
         train_losses.append(epoch_train_loss)
         print(f"\nEpoch {epoch + 1} training loss: {epoch_train_loss}")
 
-        # Testing phase
+# Testing phase
         model.eval()
         test_loss = 0.0
         with torch.no_grad():
-            for images, targets in test_loader:
-                images = list(image.to(device) for image in images)
-                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-                loss_dict = model(images, targets)
+            progress_bar = tqdm(enumerate(test_loader), total=len(test_loader), desc=f"Epoch {epoch + 1} Testing")
+            for i, (images, targets) in progress_bar:
+                try:
+                    images = list(image.to(device) for image in images)
+                    targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-                # Loss needs to be fixed, use print statements to debug
-                if isinstance(loss_dict, dict):
-                    losses = sum(loss for loss in loss_dict.values() if loss is not None and torch.isfinite(loss))
+                    loss_dict = model(images, targets)
+                    if isinstance(loss_dict, dict):
+                        losses = sum(loss for loss in loss_dict.values() if loss is not None and torch.isfinite(loss))
+                    else:
+                        losses = loss_dict  # If loss_dict is already a tensor
+
                     test_loss += losses.item()
-                else:
-                    losses = loss_dict
-                    print(f"Loss: {losses}")
-                    test_loss += losses
+                    progress_bar.set_postfix(loss=losses.item())
+
+                except Exception as e:
+                    print(f"Error in batch {i}: {str(e)}")
+                    continue
 
         epoch_test_loss = test_loss / len(test_loader)
         test_losses.append(epoch_test_loss)
-        print(f"Epoch {epoch + 1} test loss: {epoch_test_loss}")
+        print(f"Epoch {epoch + 1} testing loss: {epoch_test_loss}")
 
-        # Save model if test loss improves
-        if epoch == 0 or epoch_test_loss < min(test_losses[:-1]):
+        # Save the best model
+        if epoch_test_loss < best_loss:
+            best_loss = epoch_test_loss
             torch.save(model.state_dict(), model_save_path)
-            print(f"Model saved with test loss: {epoch_test_loss}")
+            print(f"Best model saved with loss: {best_loss}")
 
-    # Final evaluation
+    # Evaluation phase after all epochs
     model.eval()
-    eval_results = []
+    eval_accuracy, eval_precision, eval_recall = 0.0, 0.0, 0.0
+    total_samples = 0
+
     with torch.no_grad():
-        for i, (images, targets) in enumerate(eval_loader):
-            images = list(image.to(device) for image in images)
-            outputs = model(images)
-            
-            # Calculate metrics for each image
-            for output, target in zip(outputs, targets):
-                metrics = {
-                    'image_id': i,
-                    'loss': sum(model(images, [target]).values()).item(),
-                    'num_detections': len(output['boxes']),
-                    'max_score': output['scores'].max().item() if len(output['scores']) > 0 else 0
-                }
-                eval_results.append(metrics)
-                
-                # Visualize results
-                visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), output, image_id=f"final_eval_{i}")
+        progress_bar = tqdm(enumerate(eval_loader), total=len(eval_loader), desc="Final Evaluation")
+        for i, (images, targets) in progress_bar:
+            try:
+                images = list(image.to(device) for image in images)
+                outputs = model(images)
+
+                # Compute evaluation metrics (e.g., accuracy, precision, recall)
+                for output, target in zip(outputs, targets):
+                    predicted_boxes = output['boxes'].cpu().detach().numpy()
+                    target_boxes = target['boxes'].cpu().detach().numpy()
+
+                    iou_threshold = 0.5  # Intersection-over-Union threshold for a correct prediction
+                    matched_predictions = 0
+                    for pred_box in predicted_boxes:
+                        for tgt_box in target_boxes:
+                            iou = compute_iou(pred_box, tgt_box)  # Implement a compute_iou function
+                            if iou >= iou_threshold:
+                                matched_predictions += 1
+                                break
+
+                    total_samples += len(target_boxes)
+                    eval_accuracy += matched_predictions / len(target_boxes) if target_boxes else 0.0
+
+                eval_precision += len(predicted_boxes) / max(len(target_boxes), 1)
+                eval_recall += len(predicted_boxes) / max(len(predicted_boxes) + len(target_boxes), 1)
+
+            except Exception as e:
+                print(f"Error in evaluation batch {i}: {str(e)}")
+                continue
+
+    # Aggregate metrics
+    if total_samples > 0:
+        eval_accuracy /= total_samples
+    eval_metrics['accuracy'].append(eval_accuracy)
+    eval_metrics['precision'].append(eval_precision / len(eval_loader))
+    eval_metrics['recall'].append(eval_recall / len(eval_loader))
+
+    print("Final evaluation metrics:")
+    print(f"  Accuracy: {eval_accuracy:.4f}")
+    print(f"  Precision: {eval_precision:.4f}")
+    print(f"  Recall: {eval_recall:.4f}")
+
+    # Plot training and testing loss
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(1, len(train_losses) + 1), train_losses, label='Train Loss')
+    plt.plot(range(1, len(test_losses) + 1), test_losses, label='Test Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training and Testing Loss Over Epochs')
+    plt.legend()
+    plt.grid(True)
+
+    # Save the plot
+    results_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Test_Results\results_statistics"
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+
+    plot_file = os.path.join(results_dir, "training_testing_loss.png")
+    plt.savefig(plot_file)
+    print(f"Training and testing loss plot saved to {plot_file}")
+
+    plt.show()
 
     # Save evaluation results
-    results_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Test_Results\results_statistics"
     results_file = os.path.join(results_dir, "evaluation_results.csv")
+    eval_results = {
+        "Metric": ["Accuracy", "Precision", "Recall"],
+        "Value": [eval_accuracy, eval_precision, eval_recall]
+    }
     df = pd.DataFrame(eval_results)
     df.to_csv(results_file, index=False)
-    print("Evaluation results saved to evaluation_results.csv")
+    print(f"Evaluation results saved to {results_file}")
 
+# Utility function for Intersection over Union (IoU)
+def compute_iou(box1, box2):
+    x1, y1, x2, y2 = box1
+    x1_gt, y1_gt, x2_gt, y2_gt = box2
+
+    xi1 = max(x1, x1_gt)
+    yi1 = max(y1, y1_gt)
+    xi2 = min(x2, x2_gt)
+    yi2 = min(y2, y2_gt)
+
+    inter_area = max(0, xi2 - xi1 + 1) * max(0, yi2 - yi1 + 1)
+
+    box1_area = (x2 - x1 + 1) * (y2 - y1 + 1)
+    box2_area = (x2_gt - x1_gt + 1) * (y2_gt - y1_gt + 1)
+
+    union_area = box1_area + box2_area - inter_area
+
+    return inter_area / union_area if union_area > 0 else 0.0
