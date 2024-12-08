@@ -183,7 +183,7 @@ class COCOSubsetDataset(Dataset):
         return img_tensor, target
 
 # Visualizing the results
-def visualize_results(image_input, outputs, threshold=0.05, image_id = None):  # Lower threshold
+def visualize_results(image_input, outputs, threshold=0.5, image_id = None):  # Lower threshold
     if isinstance(image_input, str):
         image = Image.open(image_input).convert("RGB")
     else:
@@ -233,15 +233,16 @@ def visualize_results(image_input, outputs, threshold=0.05, image_id = None):  #
 if __name__ == "__main__":
     # Paths
     annotation_file = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_train2017.json'
-    image_dir = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\train2017\train2017'
+    # image_dir = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\train2017\train2017'
+    image_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Images"
 
     # Load subset of COCO dataset
-    subset_size = 100
+    subset_size = 500
     dataset = COCOSubsetDataset(image_dir, annotation_file, subset_size=subset_size)
     def collate_fn(batch):
         return tuple(zip(*batch))
         
-    data_loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)  # Set num_workers to 0 to avoid multiprocessing issues
+    data_loader = DataLoader(dataset, batch_size=20, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)  # Set num_workers to 0 to avoid multiprocessing issues
 
     # Initialize model
     num_classes = 91  # Update based on the number of classes in COCO dataset (including background)
@@ -251,10 +252,20 @@ if __name__ == "__main__":
     # Define optimizer and criterion
     optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
 
-    
+    # Evaluate on a small set of images
+    eval_subset_size = 100
+    # eval_threshold = 0.5
+    # eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
+    eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
+    annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
+    eval_dataset = COCOSubsetDataset(eval_dir, annotation_file, subset_size=eval_subset_size)
+    eval_data_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))  # Set num_workers to 0 to avoid multiprocessing issues
 
-    # Training loop (1 epoch for dry run)
-    for epoch in range(1):
+    best_loss = float('inf')
+    model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model.h5"
+
+    for epoch in range(20):
+        # Training loop (as before)
         progress_bar = tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Epoch {epoch + 1}")
         running_loss = 0.0
         for i, (images, targets) in progress_bar:
@@ -279,28 +290,45 @@ if __name__ == "__main__":
                 print(f"Error in batch {i}: {str(e)}")
                 continue
 
-    # Print training complete message
-    print("Training complete.")
+        # Calculate average loss for this epoch
+        epoch_loss = running_loss / len(data_loader)
+        print(f"\nEpoch {epoch + 1} average loss: {epoch_loss}")
 
-    # Switch to evaluation mode
-    model.eval()
+        # Evaluation phase
+        model.eval()
+        eval_loss = 0.0
+        with torch.no_grad():
+            for i, (images, targets) in enumerate(eval_data_loader):
+                images = list(image for image in images)
+                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+                outputs = model(images, targets)
+                if isinstance(outputs, dict):
+                    # During training, model returns a dict of losses
+                    batch_loss = sum(outputs.values())
+                elif isinstance(outputs, list):
+                    # During evaluation, model returns a list of predictions
+                    continue  # Skip loss calculation during evaluation
+                else:
+                    # Handle unexpected output type
+                    print(f"Unexpected output type: {type(outputs)}")
+                    continue
+                eval_loss += batch_loss.item()
+                
+                # Visualize last batch results
+                if i == len(eval_data_loader) - 1:
+                    outputs = model(images)
+                    visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), outputs[0], image_id=f"epoch_{epoch+1}")
 
-    # Evaluate on a small set of images
-    eval_subset_size = 10
-    # eval_threshold = 0.5
-    eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
-    annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
-    eval_dataset = COCOSubsetDataset(eval_dir, annotation_file, subset_size=eval_subset_size)
-    eval_data_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))  # Set num_workers to 0 to avoid multiprocessing issues
+        avg_eval_loss = eval_loss / len(eval_data_loader)
+        print(f"Evaluation loss: {avg_eval_loss}")
 
-    with torch.no_grad():
-        for i, (images, targets) in enumerate(eval_data_loader): # Something is wrong when loading images, as 000000391895.jpg isn't in the test2017 folder
-            images = list(image for image in images)
-            outputs = model(images)
-            print(f"Evaluating image {i + 1}/{eval_subset_size}")
-            # print the bounding boxes
-            print(outputs[0]['boxes'])
-            visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), outputs[0], image_id=i)
+        # Save model if it improves
+        if avg_eval_loss < best_loss:
+            best_loss = avg_eval_loss
+            torch.save(model.state_dict(), model_save_path)
+            print(f"Model saved with loss: {best_loss}")
+        
+        model.train()
 
-    # Print evaluation complete message
-    print("Evaluation complete.")
+    print("Training and evaluation complete.")
+    print(f"Best model saved with loss: {best_loss}")
