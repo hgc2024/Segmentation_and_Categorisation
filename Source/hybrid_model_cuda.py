@@ -43,6 +43,7 @@ import cv2
 import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
+import pandas as pd
 
 # Check for GPU availability
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -125,8 +126,21 @@ class COCOSubsetDataset(Dataset):
         self.image_dir = image_dir
         self.transform = transform
         self.subset_size = subset_size
-        self.images = self.coco_data['images'][:self.subset_size]
-        self.annotations = self.coco_data['annotations']
+        
+        # Get list of available images in directory
+        available_images = set(os.listdir(image_dir))
+        
+        # Filter images to only those that exist in directory
+        self.images = [img for img in self.coco_data['images'] 
+                      if img['file_name'] in available_images][:self.subset_size]
+        
+        # Get valid image IDs
+        valid_image_ids = {img['id'] for img in self.images}
+        
+        # Filter annotations to only those that correspond to available images
+        self.annotations = [ann for ann in self.coco_data['annotations'] 
+                          if ann['image_id'] in valid_image_ids]
+        
         self.categories = self.coco_data['categories']
 
     def __len__(self):
@@ -184,11 +198,12 @@ class COCOSubsetDataset(Dataset):
 
 # Visualizing the results
 def visualize_results(image_input, outputs, threshold=0.5, image_id = None):  # Lower threshold
+    plt.ioff()  # Turn off interactive mode
     if isinstance(image_input, str):
         image = Image.open(image_input).convert("RGB")
     else:
         image = (image_input * 255).astype(np.uint8)
-    plt.figure(figsize=(12, 8))
+    fig = plt.figure(figsize=(12, 8))
     plt.imshow(image)
     ax = plt.gca()
 
@@ -209,25 +224,17 @@ def visualize_results(image_input, outputs, threshold=0.5, image_id = None):  # 
                 category_name = next((cat['name'] for cat in categories if cat['id'] == label.item()), "Unknown")
                 ax.add_patch(plt.Rectangle((x1.cpu(), y1.cpu()), (x2 - x1).cpu(), (y2 - y1).cpu(), fill=False, color='red', linewidth=2))
                 ax.text(x1.cpu(), y1.cpu(), f"{category_name}: {score.item():.2f}", color='white', fontsize=8, bbox=dict(facecolor='red', edgecolor='none', alpha=0.5))
-        print(f"Found {len(outputs['boxes'])} potential objects")
-        print(f"Max confidence score: {outputs['scores'].max().item():.3f}")
-        
-    for box, label, score in zip(outputs['boxes'], outputs['labels'], outputs['scores']):
-        if score > threshold:
-            x1, y1, x2, y2 = box
-            ax.add_patch(plt.Rectangle((x1.cpu(), y1.cpu()), (x2 - x1).cpu(), (y2 - y1).cpu(), fill=False, color='red', linewidth=2))
-            ax.text(x1.cpu(), y1.cpu(), f"Label {label.item()}: {score.item():.2f}", color='white', fontsize=8, bbox=dict(facecolor='red', edgecolor='none', alpha=0.5))
 
     plt.axis("off")
 
     # Save the figure with image_id in filename
-    output_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Test_Results\Images"
+    output_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Test_Images\v2"
     if image_id is not None:
         plt.savefig(os.path.join(output_dir, f"{image_id}_output_.png"))
     else:
         plt.savefig(os.path.join(output_dir, "output.png"))
-
-    plt.show()
+    
+    plt.close(fig)  # Close the figure to free memory
 
 # Example usage
 if __name__ == "__main__":
@@ -237,12 +244,44 @@ if __name__ == "__main__":
     image_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Images"
 
     # Load subset of COCO dataset
-    subset_size = 500
+    subset_size = 100
     dataset = COCOSubsetDataset(image_dir, annotation_file, subset_size=subset_size)
     def collate_fn(batch):
         return tuple(zip(*batch))
         
-    data_loader = DataLoader(dataset, batch_size=20, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)  # Set num_workers to 0 to avoid multiprocessing issues
+    data_loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)  # Set num_workers to 0 to avoid multiprocessing issues
+
+     # Evaluate on a small set of images
+    eval_subset_size = 10
+    # eval_threshold = 0.5
+    # eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
+    # eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
+    # Set total number of images to use
+    train_ratio = 0.8  # 80% for training
+    
+    # Set image directory
+    image_base_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Images"
+    
+    # Calculate train and test sizes
+    train_size = int(subset_size * train_ratio)
+    test_size = subset_size - train_size
+    
+    # Create datasets with split
+    all_dataset = COCOSubsetDataset(image_base_dir, annotation_file, subset_size=subset_size)
+    train_dataset, test_dataset = torch.utils.data.random_split(all_dataset, [train_size, test_size])
+    
+        
+    # Update eval_dataset to use test_dataset
+    eval_dataset = test_dataset
+    eval_dir = image_base_dir  # Keep reference to original directory
+    annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
+    eval_dataset = COCOSubsetDataset(eval_dir, annotation_file, subset_size=eval_subset_size)
+    eval_data_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))  # Set num_workers to 0 to avoid multiprocessing issues
+
+    best_loss = float('inf')
+    model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model.h5"
+
+
 
     # Initialize model
     num_classes = 91  # Update based on the number of classes in COCO dataset (including background)
@@ -252,33 +291,47 @@ if __name__ == "__main__":
     # Define optimizer and criterion
     optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
 
-    # Evaluate on a small set of images
-    eval_subset_size = 100
-    # eval_threshold = 0.5
-    # eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
-    eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
-    annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
-    eval_dataset = COCOSubsetDataset(eval_dir, annotation_file, subset_size=eval_subset_size)
-    eval_data_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=lambda x: tuple(zip(*x)))  # Set num_workers to 0 to avoid multiprocessing issues
+    # Create DataLoaders for train and test sets
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+    eval_loader = DataLoader(eval_dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_fn)
 
-    best_loss = float('inf')
-    model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model.h5"
+    # Lists to store metrics
+    train_losses = []
+    test_losses = []
+    eval_metrics = {'loss': [], 'accuracy': [], 'precision': [], 'recall': []}
 
-    for epoch in range(20):
-        # Training loop (as before)
-        progress_bar = tqdm(enumerate(data_loader), total=len(data_loader), desc=f"Epoch {epoch + 1}")
+
+    for epoch in range(2):
+        # Clear CUDA cache before each epoch
+        torch.cuda.empty_cache()
+        
+        # Training phase
+        model.train()
         running_loss = 0.0
+        progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch + 1} Training")
+        
         for i, (images, targets) in progress_bar:
-            # Skip batches with empty boxes
-            if any(len(target['boxes']) == 0 for target in targets):
-                continue
+            try:
+                images = list(image.to(device) for image in images)
+                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    torch.cuda.empty_cache()
+                    images = list(image.to(device) for image in images)
+                    targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+                else:
+                    raise e
 
-            images = list(image for image in images)
+            images = list(image.to(device) for image in images)
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
             try:
                 loss_dict = model(images, targets)
-                losses = sum(loss for loss in loss_dict.values())
+                if isinstance(loss_dict, dict):
+                    losses = sum(loss for loss in loss_dict.values() if loss is not None and torch.isfinite(loss))
+                else:
+                    losses = loss_dict  # If loss_dict is already a tensor
 
                 optimizer.zero_grad()
                 losses.backward()
@@ -290,45 +343,62 @@ if __name__ == "__main__":
                 print(f"Error in batch {i}: {str(e)}")
                 continue
 
-        # Calculate average loss for this epoch
-        epoch_loss = running_loss / len(data_loader)
-        print(f"\nEpoch {epoch + 1} average loss: {epoch_loss}")
+        epoch_train_loss = running_loss / len(train_loader)
+        train_losses.append(epoch_train_loss)
+        print(f"\nEpoch {epoch + 1} training loss: {epoch_train_loss}")
 
-        # Evaluation phase
+        # Testing phase
         model.eval()
-        eval_loss = 0.0
+        test_loss = 0.0
         with torch.no_grad():
-            for i, (images, targets) in enumerate(eval_data_loader):
-                images = list(image for image in images)
+            for images, targets in test_loader:
+                images = list(image.to(device) for image in images)
                 targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-                outputs = model(images, targets)
-                if isinstance(outputs, dict):
-                    # During training, model returns a dict of losses
-                    batch_loss = sum(outputs.values())
-                elif isinstance(outputs, list):
-                    # During evaluation, model returns a list of predictions
-                    continue  # Skip loss calculation during evaluation
+                loss_dict = model(images, targets)
+
+                # Loss needs to be fixed, use print statements to debug
+                if isinstance(loss_dict, dict):
+                    losses = sum(loss for loss in loss_dict.values() if loss is not None and torch.isfinite(loss))
+                    test_loss += losses.item()
                 else:
-                    # Handle unexpected output type
-                    print(f"Unexpected output type: {type(outputs)}")
-                    continue
-                eval_loss += batch_loss.item()
-                
-                # Visualize last batch results
-                if i == len(eval_data_loader) - 1:
-                    outputs = model(images)
-                    visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), outputs[0], image_id=f"epoch_{epoch+1}")
+                    losses = loss_dict
+                    print(f"Loss: {losses}")
+                    test_loss += losses
 
-        avg_eval_loss = eval_loss / len(eval_data_loader)
-        print(f"Evaluation loss: {avg_eval_loss}")
+        epoch_test_loss = test_loss / len(test_loader)
+        test_losses.append(epoch_test_loss)
+        print(f"Epoch {epoch + 1} test loss: {epoch_test_loss}")
 
-        # Save model if it improves
-        if avg_eval_loss < best_loss:
-            best_loss = avg_eval_loss
+        # Save model if test loss improves
+        if epoch == 0 or epoch_test_loss < min(test_losses[:-1]):
             torch.save(model.state_dict(), model_save_path)
-            print(f"Model saved with loss: {best_loss}")
-        
-        model.train()
+            print(f"Model saved with test loss: {epoch_test_loss}")
 
-    print("Training and evaluation complete.")
-    print(f"Best model saved with loss: {best_loss}")
+    # Final evaluation
+    model.eval()
+    eval_results = []
+    with torch.no_grad():
+        for i, (images, targets) in enumerate(eval_loader):
+            images = list(image.to(device) for image in images)
+            outputs = model(images)
+            
+            # Calculate metrics for each image
+            for output, target in zip(outputs, targets):
+                metrics = {
+                    'image_id': i,
+                    'loss': sum(model(images, [target]).values()).item(),
+                    'num_detections': len(output['boxes']),
+                    'max_score': output['scores'].max().item() if len(output['scores']) > 0 else 0
+                }
+                eval_results.append(metrics)
+                
+                # Visualize results
+                visualize_results(images[0].cpu().numpy().transpose(1, 2, 0), output, image_id=f"final_eval_{i}")
+
+    # Save evaluation results
+    results_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Test_Results\results_statistics"
+    results_file = os.path.join(results_dir, "evaluation_results.csv")
+    df = pd.DataFrame(eval_results)
+    df.to_csv(results_file, index=False)
+    print("Evaluation results saved to evaluation_results.csv")
+
