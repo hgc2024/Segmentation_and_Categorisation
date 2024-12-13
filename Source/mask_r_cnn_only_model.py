@@ -1,3 +1,24 @@
+"""
+Results with 5 epochs, batches of 4, and 100 training images and 20 validation images:
+Training Epoch 1/5:  92%|███ting: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████| 5/5 [00:33<00:00,  6.79s/it]
+Mean IoU: 0.0916, Detection Rate (IoU>=0.5): 0.0483
+Epoch 1, Train Loss: 84.9360, Mean IoU: 0.0916, Detection Rate: 0.0483
+Evaluating: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 5/5 [00:28<00:00,  5.68s/it]
+Mean IoU: 0.0871, Detection Rate (IoU>=0.5): 0.0414
+Epoch 2, Train Loss: 46.0522, Mean IoU: 0.0871, Detection Rate: 0.0414
+Evaluating: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 5/5 [00:37<00:00,  7.51s/it]
+Mean IoU: 0.2395, Detection Rate (IoU>=0.5): 0.1276
+Epoch 3, Train Loss: 44.1899, Mean IoU: 0.2395, Detection Rate: 0.1276
+Evaluating: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 5/5 [00:35<00:00,  7.02s/it]
+Mean IoU: 0.1793, Detection Rate (IoU>=0.5): 0.1310
+Epoch 4, Train Loss: 44.1052, Mean IoU: 0.1793, Detection Rate: 0.1310
+Evaluating: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 5/5 [00:33<00:00,  6.70s/it] 
+Mean IoU: 0.1684, Detection Rate (IoU>=0.5): 0.1172
+Epoch 5, Train Loss: 44.9708, Mean IoU: 0.1684, Detection Rate: 0.1172
+
+"""
+
+
 import torch
 import torchvision
 from torchvision.models.detection import maskrcnn_resnet50_fpn
@@ -8,12 +29,13 @@ import os
 import json
 import numpy as np
 import cv2
+from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Dataset class for COCO subset
 class COCOSubsetDataset(Dataset):
-    def __init__(self, image_dir, annotation_file, transform=None, subset_size=100):
+    def __init__(self, image_dir, annotation_file, transform=None, subset_size=1000):
         with open(annotation_file) as f:
             self.coco_data = json.load(f)
 
@@ -63,54 +85,117 @@ class COCOSubsetDataset(Dataset):
 
         return img_tensor, target
 
-# Train the model
+
+def compute_iou(box1, box2):
+    """
+    Compute IoU between two bounding boxes.
+    Boxes are in [x1, y1, x2, y2] format.
+    """
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+
+    inter_area = max(0, x2 - x1) * max(0, y2 - y1)
+    box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union_area = box1_area + box2_area - inter_area
+
+    if union_area == 0:
+        return 0.0
+    return inter_area / union_area
+
+
+def evaluate_model(model, data_loader, iou_threshold=0.5):
+    """
+    Evaluate the model using IoU-based metric.
+    For each ground-truth box, find the best predicted box.
+    Compute the IoU and consider it a correct detection if IoU >= iou_threshold.
+    Returns: mean IoU over all matched boxes and the detection rate at the given threshold.
+    """
+    model.eval()
+    all_ious = []
+    matches = 0
+    total_gt = 0
+
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    with torch.no_grad():
+        for images, targets in tqdm(data_loader, desc="Evaluating"):
+            images = [img.to(device) for img in images]
+            # Only images, no targets for inference
+            predictions = model(images)
+
+            # Move targets to CPU for evaluation
+            targets = [{k: v.cpu() for k, v in t.items()} for t in targets]
+
+            for pred, target in zip(predictions, targets):
+                gt_boxes = target['boxes'].numpy()
+                pred_boxes = pred['boxes'].cpu().numpy()
+                total_gt += len(gt_boxes)
+
+                # Match each GT box to the predicted box with the highest IoU
+                # (This is a simplistic matching strategy)
+                for gt_box in gt_boxes:
+                    ious = [compute_iou(gt_box, pb) for pb in pred_boxes]
+                    if ious:
+                        best_iou = max(ious)
+                        all_ious.append(best_iou)
+                        if best_iou >= iou_threshold:
+                            matches += 1
+                    else:
+                        # No predictions, so IoU = 0 for this GT
+                        all_ious.append(0.0)
+
+    mean_iou = np.mean(all_ious) if all_ious else 0.0
+    detection_rate = matches / total_gt if total_gt > 0 else 0.0
+
+    print(f"Mean IoU: {mean_iou:.4f}, Detection Rate (IoU>={iou_threshold}): {detection_rate:.4f}")
+    return mean_iou, detection_rate
+
+
 def train_model(model, train_loader, val_loader, num_epochs, optimizer):
-    model.train()
     for epoch in range(num_epochs):
-        epoch_loss = 0
-        for images, targets in train_loader:
+        model.train()
+        epoch_loss = 0.0
+        train_iterator = tqdm(train_loader, desc=f"Training Epoch {epoch+1}/{num_epochs}", leave=False)
+
+        for images, targets in train_iterator:
             images = [img.to(device) for img in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
             optimizer.zero_grad()
             loss_dict = model(images, targets)
+            if isinstance(loss_dict, list):
+                # If no annotations are present, skip this batch
+                continue
+
             losses = sum(loss for loss in loss_dict.values())
             losses.backward()
             optimizer.step()
             epoch_loss += losses.item()
+            train_iterator.set_postfix(loss=losses.item())
 
-        val_loss = evaluate_model(model, val_loader)
-        print(f"Epoch {epoch+1}, Train Loss: {epoch_loss}, Validation Loss: {val_loss}")
+        # Use the new evaluation metric after each epoch
+        mean_iou, detection_rate = evaluate_model(model, val_loader, iou_threshold=0.5)
+        print(f"Epoch {epoch+1}, Train Loss: {epoch_loss:.4f}, Mean IoU: {mean_iou:.4f}, Detection Rate: {detection_rate:.4f}")
 
-# Evaluate the model
-def evaluate_model(model, data_loader):
-    model.eval()
-    total_loss = 0
-    with torch.no_grad():
-        for images, targets in data_loader:
-            images = [img.to(device) for img in images]
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-            loss_dict = model(images, targets)
-            total_loss += sum(loss for loss in loss_dict.values()).item()
-
-    return total_loss / len(data_loader)
-
-# Main function
 def main():
     # File paths
-    train_image_dir = "/path/to/train/images"
-    train_annotation_file = "/path/to/train/annotations.json"
-    val_image_dir = "/path/to/val/images"
-    val_annotation_file = "/path/to/val/annotations.json"
-    model_save_path = "/path/to/save/model.pth"
+    train_image_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Images"
+    train_annotation_file = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_train2017.json'
+    val_image_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
+    val_annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
+    model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model.h5"
 
     # Create datasets and dataloaders
     train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file)
-    val_dataset = COCOSubsetDataset(val_image_dir, val_annotation_file, subset_size=20)
+    val_dataset = COCOSubsetDataset(val_image_dir, val_annotation_file, subset_size=200)
 
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
-    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
+    train_loader = DataLoader(train_dataset, batch_size=5, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
+    val_loader = DataLoader(val_dataset, batch_size=5, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
 
     # Initialize the Mask R-CNN model
     num_classes = 91  # COCO dataset has 90 classes + background
