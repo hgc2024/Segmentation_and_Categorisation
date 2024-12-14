@@ -188,14 +188,14 @@ def main():
     train_annotation_file = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_train2017.json'
     val_image_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
     val_annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
-    model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model.h5"
+    model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_mask_r_cnn_only_v2.h5"
 
     # Create datasets and dataloaders
-    train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file)
-    val_dataset = COCOSubsetDataset(val_image_dir, val_annotation_file, subset_size=200)
+    train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file, subset_size = 8500)
+    val_dataset = COCOSubsetDataset(val_image_dir, val_annotation_file, subset_size=340)
 
-    train_loader = DataLoader(train_dataset, batch_size=5, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
-    val_loader = DataLoader(val_dataset, batch_size=5, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
+    train_loader = DataLoader(train_dataset, batch_size=20, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
+    val_loader = DataLoader(val_dataset, batch_size=20, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
 
     # Initialize the Mask R-CNN model
     num_classes = 91  # COCO dataset has 90 classes + background

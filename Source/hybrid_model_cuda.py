@@ -93,7 +93,7 @@ class CustomMaskRCNN(nn.Module):
 # Dataset
 # ----------------------------------------------
 class COCOSubsetDataset(Dataset):
-    def __init__(self, image_dir, annotation_file, transform=None, subset_size=100):
+    def __init__(self, image_dir, annotation_file, transform=None, subset_size=1000):
         # Load COCO-style annotations.
         with open(annotation_file) as f:
             self.coco_data = json.load(f)
@@ -281,22 +281,30 @@ def main():
     model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model.h5"
 
     # Create dataset instances.
-    train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file)
-    test_dataset = COCOSubsetDataset(test_image_dir, test_annotation_file, subset_size=20)
+    train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file, subset_size=8515)
+    test_dataset = COCOSubsetDataset(test_image_dir, test_annotation_file, subset_size=355)
     
     # Create dataloaders for batching data during training and testing.
-    train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
-    test_loader = DataLoader(test_dataset, batch_size=10, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
+    train_loader = DataLoader(train_dataset, batch_size=5, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
+    test_loader = DataLoader(test_dataset, batch_size=5, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
 
     # Initialize the custom model with the specified number of classes.
     num_classes = 91  # COCO dataset classes + background.
-    model = CustomMaskRCNN(num_classes).to(device)
+    # model = CustomMaskRCNN(num_classes).to(device)
+
+    # Load the pre-trained model weights
+    model = CustomMaskRCNN(num_classes)
+    model_load_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_hybrid_v2.h5"
+    model.load_state_dict(torch.load(model_load_path))
+    model.to(device)
+
+
 
     # Set up an optimizer for training (Adam).
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     # Run the training loop for the specified number of epochs.
-    num_epochs = 10
+    num_epochs = 40
     metrics = train_model(model, train_loader, test_loader, optimizer, num_epochs, model_save_path)
 
     # Plot the training loss over epochs.
