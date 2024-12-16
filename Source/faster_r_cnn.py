@@ -220,11 +220,11 @@ def main():
     model_load_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_faster_r_cnn_v1.h5"
 
     # Create datasets and dataloaders
-    train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file, transform=transform subset_size = 8515)
+    train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file, transform=transform, subset_size = 8515)
     val_dataset = COCOSubsetDataset(val_image_dir, val_annotation_file, transform=transform, subset_size=355)
 
-    train_loader = DataLoader(train_dataset, batch_size=5, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
-    val_loader = DataLoader(val_dataset, batch_size=5, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
+    train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
+    val_loader = DataLoader(val_dataset, batch_size=10, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
 
     # Initialize the Mask R-CNN model
     num_classes = 91  # COCO dataset has 90 classes + background
