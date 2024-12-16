@@ -223,8 +223,8 @@ def main():
     train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file, transform=transform, subset_size = 8515)
     val_dataset = COCOSubsetDataset(val_image_dir, val_annotation_file, transform=transform, subset_size=355)
 
-    train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
-    val_loader = DataLoader(val_dataset, batch_size=10, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
+    train_loader = DataLoader(train_dataset, batch_size=5, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
+    val_loader = DataLoader(val_dataset, batch_size=5, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
 
     # Initialize the Mask R-CNN model
     num_classes = 91  # COCO dataset has 90 classes + background
@@ -238,7 +238,7 @@ def main():
     model.to(device)
 
     # Define optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
     # Train and validate the model
     train_model(model, train_loader, val_loader, num_epochs=40, optimizer=optimizer, model_save_path=model_save_path)
