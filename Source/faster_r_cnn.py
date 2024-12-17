@@ -238,7 +238,7 @@ def main():
     model.to(device)
 
     # Define optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.00001)
 
     # Train and validate the model
     train_model(model, train_loader, val_loader, num_epochs=40, optimizer=optimizer, model_save_path=model_save_path)
