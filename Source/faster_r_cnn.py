@@ -32,6 +32,7 @@ import json
 import numpy as np
 import cv2
 from tqdm import tqdm
+from scipy.optimize import linear_sum_assignment
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -151,18 +152,31 @@ def evaluate_model(model, data_loader, iou_threshold=0.5):
                 pred_boxes = pred['boxes'].cpu().numpy()
                 total_gt += len(gt_boxes)
 
-                # Match each GT box to the predicted box with the highest IoU
-                # (This is a simplistic matching strategy)
-                for gt_box in gt_boxes:
-                    ious = [compute_iou(gt_box, pb) for pb in pred_boxes]
-                    if ious:
-                        best_iou = max(ious)
-                        all_ious.append(best_iou)
-                        if best_iou >= iou_threshold:
+                # Compute IoU matrix between all GT and predicted boxes
+                if len(gt_boxes) > 0 and len(pred_boxes) > 0:
+                    iou_matrix = np.zeros((len(gt_boxes), len(pred_boxes)))
+                    for i, gt_box in enumerate(gt_boxes):
+                        for j, pred_box in enumerate(pred_boxes):
+                            iou_matrix[i, j] = compute_iou(gt_box, pred_box)
+                    
+                    # Use Hungarian algorithm to find optimal matching
+                    # Note: algorithm minimizes cost, so we use negative IoU
+                    cost_matrix = -iou_matrix
+                    gt_indices, pred_indices = linear_sum_assignment(cost_matrix)
+                    
+                    # Add matched IoUs to results
+                    for gt_idx, pred_idx in zip(gt_indices, pred_indices):
+                        iou = iou_matrix[gt_idx, pred_idx]
+                        all_ious.append(iou)
+                        if iou >= iou_threshold:
                             matches += 1
-                    else:
-                        # No predictions, so IoU = 0 for this GT
-                        all_ious.append(0.0)
+                            
+                    # Add zeros for unmatched ground truth boxes
+                    remaining_gt = len(gt_boxes) - len(gt_indices)
+                    all_ious.extend([0.0] * remaining_gt)
+                elif len(gt_boxes) > 0:
+                    # No predictions but we have ground truth
+                    all_ious.extend([0.0] * len(gt_boxes))
 
     mean_iou = np.mean(all_ious) if all_ious else 0.0
     detection_rate = matches / total_gt if total_gt > 0 else 0.0
@@ -173,7 +187,9 @@ def evaluate_model(model, data_loader, iou_threshold=0.5):
 
 def train_model(model, train_loader, val_loader, num_epochs, optimizer, model_save_path=None):
 
+    # These metrics only pertained to the best saved model, not the best metrics overall
     best_mean_iou = 0.0
+    best_detection_rate = 0.0
 
     for epoch in range(num_epochs):
         if device.type == "cuda":
@@ -202,8 +218,9 @@ def train_model(model, train_loader, val_loader, num_epochs, optimizer, model_sa
         # Use the new evaluation metric after each epoch
         mean_iou, detection_rate = evaluate_model(model, val_loader, iou_threshold=0.5)
 
-        if model_save_path is not None and mean_iou > best_mean_iou:
+        if model_save_path is not None and mean_iou > best_mean_iou and detection_rate > best_detection_rate:
             best_mean_iou = mean_iou
+            best_detection_rate = detection_rate
             torch.save(model.state_dict(), model_save_path)
 
         print(f"Epoch {epoch+1}, Train Loss: {epoch_loss:.4f}, Mean IoU: {mean_iou:.4f}, Detection Rate: {detection_rate:.4f}")
@@ -215,16 +232,16 @@ def main():
     train_annotation_file = r'C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_train2017.json'
     val_image_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
     val_annotation_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
-    model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_faster_r_cnn_v2.h5"
+    model_save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_faster_r_cnn_v3.h5"
 
-    model_load_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_faster_r_cnn_v1.h5"
+    model_load_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_faster_r_cnn_v2.h5"
 
     # Create datasets and dataloaders
-    train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file, transform=transform, subset_size = 8515)
-    val_dataset = COCOSubsetDataset(val_image_dir, val_annotation_file, transform=transform, subset_size=355)
+    train_dataset = COCOSubsetDataset(train_image_dir, train_annotation_file, transform=transform, subset_size = 8514)
+    val_dataset = COCOSubsetDataset(val_image_dir, val_annotation_file, transform=transform, subset_size=354)
 
-    train_loader = DataLoader(train_dataset, batch_size=5, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
-    val_loader = DataLoader(val_dataset, batch_size=5, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
+    train_loader = DataLoader(train_dataset, batch_size=6, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
+    val_loader = DataLoader(val_dataset, batch_size=6, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
 
     # Initialize the Mask R-CNN model
     num_classes = 91  # COCO dataset has 90 classes + background
