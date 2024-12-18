@@ -294,7 +294,7 @@ def main():
 
     # Load the pre-trained model weights
     model = CustomMaskRCNN(num_classes)
-    model_load_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_hybrid_v2.h5"
+    model_load_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Models\best_model_hybrid_v3.h5"
     model.load_state_dict(torch.load(model_load_path))
     model.to(device)
 

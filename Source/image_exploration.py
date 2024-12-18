@@ -87,9 +87,9 @@ def display_image_with_segmentations(image_path, annotations, output_path=None):
         fig.savefig(os.path.join(output_path, annotated_image_name))
 
 # # Find 5 images in which at least one of the annotations is a crowd
-# crowd_images = []
-# crowd_images_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Crowd_Images"
-# crowd_image_segmentations_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Crowd_Images\Segmentations"
+crowd_images = []
+crowd_images_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Crowd_Images"
+crowd_image_segmentations_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Crowd_Images\Segmentations"
 person_eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Eval_Images"
 images_eval_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017"
 annotation_eval_file = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Annotations\annotations_trainval2017\annotations\instances_val2017.json"
@@ -101,6 +101,19 @@ with open(annotation_eval_file, 'r') as f:
 
 # store length of images in the dataset
 total_images = len(coco_data_eval['images'])
+
+# Please write code so that the actual boxes and labels are displayed for the following image: "C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017\000000033221.jpg"
+# Get the image info and annotations for the specific image
+# image_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017\000000033221.jpg"
+image_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Datasets\COCO\Images\val2017\val2017\000000013923.jpg"
+image_id = int(os.path.basename(image_path).split('.')[0])
+annotations = [ann for ann in coco_data_eval['annotations'] if ann['image_id'] == image_id]
+save_path = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Model_Predictions"
+
+# Display the image with annotations
+display_image_with_annotations(image_path, annotations, save_path)
+
+# exit()
 
 # Initialize progress bar
 with tqdm(total=total_images, desc="Processing images") as pbar:
@@ -121,7 +134,7 @@ with tqdm(total=total_images, desc="Processing images") as pbar:
         # Update progress bar
         pbar.update(1)
 
-exit()
+# exit()
 
 # Please create a subfolder that only contains photos with category ID 1, which is a person
 person_dir = r"C:\Users\henry-cao-local\Desktop\Self_Learning\Computer_Vision_Engineering\Segmentation_Project\Staging_Area\Segmentation_and_Categorisation\Source\Person_Car_Images"
