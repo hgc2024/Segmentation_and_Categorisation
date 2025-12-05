@@ -1,0 +1,7 @@
+numpy
+opencv-python
+tqdm
+scipy
+matplotlib
+pillow
+# Note: torch and torchvision are installed via command line in setup_env.bat to ensure CUDA support
