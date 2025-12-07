@@ -324,7 +324,6 @@ class BoxDiffusionModel(nn.Module):
         loss_noise = (loss_noise * masks).sum() / (masks.sum() + 1e-6)
         
         # 2. Box IoU Loss (Predict x0 from noise and compute IoU with GT)
-        # x0_pred = (xt - sqrt(1-alpha_bar)*noise_pred) / sqrt(alpha_bar)
         alpha_bar = self.scheduler.alphas_cumprod[t].view(-1, 1, 1)
         sqrt_alpha_bar = torch.sqrt(alpha_bar)
         sqrt_one_minus_alpha_bar = torch.sqrt(1 - alpha_bar)
@@ -332,13 +331,31 @@ class BoxDiffusionModel(nn.Module):
         pred_x0 = (noisy_boxes - sqrt_one_minus_alpha_bar * pred_noise) / sqrt_alpha_bar
         pred_x0 = torch.clamp(pred_x0, 0, 1)
         
+        # Ensure x2 > x1 and y2 > y1 for stability
+        # If the model predicts x1 > x2, we swap them or force valid width/height
+        # A simple way is to treat them as (x1, y1, x2, y2) and sort coordinates
+        # But since we trained on ordered boxes, we just clamp to ensure validity
+        
         # GIoU Loss
         loss_giou = 0
         valid_count = 0
         for b in range(batch_size):
             valid_mask = masks[b] == 1
             if valid_mask.sum() > 0:
-                loss_giou += generalized_box_iou_loss(pred_x0[b][valid_mask], gt_boxes[b][valid_mask], reduction='mean')
+                # Get valid boxes
+                p_boxes = pred_x0[b][valid_mask]
+                g_boxes = gt_boxes[b][valid_mask]
+                
+                # Enforce x1 < x2 and y1 < y2 for predictions to prevent NaN/Negative GIoU
+                # We can do this by sorting the coordinates if needed, but usually clamping is enough.
+                # Here we explicitly ensure w > 0 and h > 0 by min/max
+                x1 = torch.min(p_boxes[:, 0], p_boxes[:, 2])
+                x2 = torch.max(p_boxes[:, 0], p_boxes[:, 2])
+                y1 = torch.min(p_boxes[:, 1], p_boxes[:, 3])
+                y2 = torch.max(p_boxes[:, 1], p_boxes[:, 3])
+                p_boxes_valid = torch.stack([x1, y1, x2, y2], dim=1)
+                
+                loss_giou += generalized_box_iou_loss(p_boxes_valid, g_boxes, reduction='mean')
                 valid_count += 1
         loss_giou = loss_giou / (valid_count + 1e-6)
         
@@ -346,7 +363,14 @@ class BoxDiffusionModel(nn.Module):
         # Target is mask (1 for object, 0 for padding)
         loss_obj = F.binary_cross_entropy_with_logits(pred_obj.squeeze(-1), masks)
         
-        return loss_noise + loss_giou + loss_obj
+        total_loss = loss_noise + loss_giou + loss_obj
+        
+        return {
+            "loss": total_loss,
+            "loss_noise": loss_noise,
+            "loss_giou": loss_giou,
+            "loss_obj": loss_obj
+        }
 
     @torch.no_grad()
     def sample(self, images, num_boxes=50):
@@ -372,10 +396,17 @@ class BoxDiffusionModel(nn.Module):
             else:
                 noise = torch.zeros_like(x)
                 
-            x = (1 / torch.sqrt(alpha)) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_cumprod))) * pred_noise) + torch.sqrt(beta) * noise
+            # DDPM Update Rule
+            # x_{t-1} = 1/sqrt(alpha) * (x_t - (1-alpha)/sqrt(1-alpha_bar) * eps) + sigma * z
+            # Note: 1-alpha is beta
             
-        x = torch.clamp(x, 0, 1)
-        
+            sqrt_one_minus_alpha_cumprod = torch.sqrt(1 - alpha_cumprod)
+            model_mean = (1 / torch.sqrt(alpha)) * (x - (beta / sqrt_one_minus_alpha_cumprod) * pred_noise)
+            x = model_mean + torch.sqrt(beta) * noise
+            
+            # Clamp at every step to keep boxes valid
+            x = torch.clamp(x, 0, 1)
+            
         # Get final objectness scores
         _, pred_obj = self.head(x, img_features, torch.zeros((batch_size,), device=device, dtype=torch.long))
         scores = torch.sigmoid(pred_obj).squeeze(-1)
@@ -513,8 +544,9 @@ def main():
             boxes = boxes.to(device)
             masks = masks.to(device)
             
-            with torch.cuda.amp.autocast():
-                loss = model(images, boxes, masks)
+            with torch.amp.autocast('cuda'):
+                loss_dict = model(images, boxes, masks)
+                loss = loss_dict["loss"]
                 loss = loss / accumulation_steps
                 
             scaler.scale(loss).backward()
@@ -526,7 +558,12 @@ def main():
                 optimizer.zero_grad()
                 
             epoch_loss += loss.item() * accumulation_steps
-            pbar.set_postfix(loss=loss.item() * accumulation_steps)
+            pbar.set_postfix({
+                "loss": f"{loss.item() * accumulation_steps:.2f}",
+                "nse": f"{loss_dict['loss_noise'].item():.2f}",
+                "giou": f"{loss_dict['loss_giou'].item():.2f}",
+                "obj": f"{loss_dict['loss_obj'].item():.2f}"
+            })
             
         avg_loss = epoch_loss / len(train_loader)
         scheduler.step()
